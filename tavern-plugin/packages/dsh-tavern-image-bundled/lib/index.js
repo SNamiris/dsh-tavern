@@ -2910,6 +2910,52 @@ function createRuntime(ctx, overrides, logger, deps) {
       return ''
     }
 
+    async function previousMvuAppearance({ gameId, turn, signal }) {
+      const at = Number(turn)
+      if (!gameId || !Number.isSafeInteger(at) || at <= 1 || typeof deps.tavern?.getTurn !== 'function') return ''
+      const keyPattern = /服装|衣着|穿搭|穿着|内衣|内裤|鞋袜|配饰|性器|小穴|阴道|阴茎|肛门|嘴巴|胸部|私处|outfit|cloth|wear|genital/i
+      const pickRelevant = (node, depth = 0) => {
+        if (depth > 5 || !node || typeof node !== 'object' || Array.isArray(node)) return null
+        const out = {}
+        for (const [k, v] of Object.entries(node)) {
+          if (k === '$meta') continue
+          if (keyPattern.test(k)) {
+            out[k] = v
+          } else if (v && typeof v === 'object' && !Array.isArray(v)) {
+            const sub = pickRelevant(v, depth + 1)
+            if (sub && Object.keys(sub).length) out[k] = sub
+          }
+        }
+        return Object.keys(out).length ? out : null
+      }
+      const deadline = Date.now() + 350
+      const timeout = Symbol('previous mvu timeout')
+      for (let previous = at - 1; previous >= Math.max(1, at - 3); previous--) {
+        signal?.throwIfAborted()
+        const remaining = deadline - Date.now()
+        if (remaining <= 0) break
+        let timer
+        try {
+          const prior = await Promise.race([
+            deps.tavern.getTurn({ gameId, turn: previous }),
+            new Promise(resolve => { timer = setTimeout(() => resolve(timeout), remaining) }),
+          ])
+          if (prior === timeout || !prior) break
+          const root = prior?.variables?.stat_data ?? prior?.mvu?.stat_data ?? prior?.stat_data ?? prior?.state?.stat_data ?? prior?.variables ?? null
+          if (root && typeof root === 'object') {
+            const picked = pickRelevant(root)
+            if (picked) {
+              const serialized = JSON.stringify(picked)
+              return serialized.length > 1200 ? serialized.slice(0, 1200) + '…' : serialized
+            }
+          }
+        } catch {
+          break
+        } finally { clearTimeout(timer) }
+      }
+      return ''
+    }
+
     function autoImageRoute({ probe = false } = {}) {
       const available = usable()
       const isReady = ({ config: selected, workflow }) => {
@@ -2965,6 +3011,7 @@ function createRuntime(ctx, overrides, logger, deps) {
       const needsIdentityContext = (imageGeneration || characterUpdates)
         && /[她他]|\b(?:she|her|he|him|his|they|them|their)\b/i.test(body)
       const priorTail = needsIdentityContext ? await previousReplyTail({ gameId: sessionId, turn, body, signal }) : ''
+      const priorMvuState = imageGeneration ? await previousMvuAppearance({ gameId: sessionId, turn, signal }) : ''
       signal?.throwIfAborted()
       // 自动模式在渠道能接参考图时按参考图规划；每张图是否真的用参考图由 startJob 按本张选图决定。
       const planningGenerationMode = cfg.generationMode === 'reference' || (cfg.generationMode === 'auto' && referenceCapability(cfg, trial?.workflow ?? styleWorkflow(cfg))) ? 'reference' : 'text'
@@ -3068,8 +3115,12 @@ function createRuntime(ctx, overrides, logger, deps) {
         dynamicChars: contextBoundary < 0 ? 0 : system.length - contextBoundary,
         bodyChars: body.length,
       }
-      const plannerInput = priorTail
-        ? '上一轮正文摘录（JSON 字符串）：' + JSON.stringify(priorTail) + '\n\n本轮正文：\n' + currentInput
+      const plannerPrefix = [
+        priorMvuState ? '上一轮结束时的 MVU 服装与性器状态（本轮起始穿着参考，若本轮发生脱衣/换装请按对应瞬间调整）：\n' + priorMvuState : '',
+        priorTail ? '上一轮正文摘录（JSON 字符串）：' + JSON.stringify(priorTail) : '',
+      ].filter(Boolean).join('\n\n')
+      const plannerInput = plannerPrefix
+        ? plannerPrefix + '\n\n本轮正文：\n' + currentInput
         : currentInput
       if (trial) {
         const cacheKey = createHash('sha256').update(JSON.stringify([provider, model, plannerEffort, cfg.plannerTemperature, system, plannerInput, definitions.revision, template?.id, template?.name, plannerInputs.values, entryTrace.decisions, trial.usage])).digest('hex')

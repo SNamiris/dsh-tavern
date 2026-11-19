@@ -52,12 +52,15 @@ test('prose planning separates pictured identity from history and preserves unkn
   }
 })
 
-test('draw-turn hands the planner the end of the previous reply', async t => {
+test('draw-turn gives the planner the previous reply and its MVU appearance', async t => {
   const calls = []
   const texts = { 3: previous, 4: '裴婉宁在水池前挽起袖子。', 5: reply }
   const tavern = {
     apiVersion: 5, attach: async () => ({}), list: async () => [],
-    getTurn: async ({ turn }) => (texts[turn] ? { text: texts[turn], textVersion: 'v' + turn, card: { id: 'card-1', name: '测试卡' } } : null),
+    getTurn: async ({ turn }) => (texts[turn] ? {
+      text: texts[turn], textVersion: 'v' + turn, card: { id: 'card-1', name: '测试卡' },
+      variables: { stat_data: { 裴婉宁: { 服装: turn === 4 ? '蓝色围裙' : '其他轮次的衣服', 好感度: 81 } } },
+    } : null),
     promptSection: () => () => {}, onTurnSettled: () => () => {},
     readTurnData: async () => null, saveTurnData: async () => {},
   }
@@ -67,7 +70,11 @@ test('draw-turn hands the planner the end of the previous reply', async t => {
   })
   const runtime = await fixture.start()
   assert.equal((await runtime.request('draw-turn', { gameId: 'game-1', turn: 5 })).status, 200)
-  assert.match(calls[0].messages[0].content[0].text, /上一轮正文摘录.*裴婉宁在水池前挽起袖子/)
+  const prompt = calls[0].messages[0].content[0].text
+  assert.match(prompt, /^上一轮结束时的 MVU[^\n]*\n\{"裴婉宁":\{"服装":"蓝色围裙"\}\}/)
+  assert.match(prompt, /上一轮正文摘录.*裴婉宁在水池前挽起袖子/)
+  assert.ok(prompt.endsWith('本轮正文：\n' + reply))
+  assert.doesNotMatch(prompt, /其他轮次的衣服|好感度/)
   assert.doesNotMatch(calls[0].system, /裴婉宁在水池前挽起袖子/)
   assert.match(calls[0].system, /认人按这个顺序/)
 })
