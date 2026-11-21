@@ -190,7 +190,18 @@
 					const column = area ? area.parentElement : null;
 					// 桌面端侧栏不是 fixed（宿主 regionArea 自己让出了底栏），这时不需要让位。
 					if (!own || !area || !column || window.getComputedStyle(own).position !== "fixed") { settle(0); return; }
-					const areaBottom = area.getBoundingClientRect().bottom;
+					const ownBox = own.getBoundingClientRect();
+					const areaBox = area.getBoundingClientRect();
+					// 抽屉在屏外挂载帧（content-visibility: hidden）尚无几何尺寸，保留上次缓存的让位高度，避免误删根变量触发整页样式重算与动画中途跳动。
+					if (ownBox.height <= 0 || areaBox.height <= 0) {
+						if (observer && watching !== column) {
+							if (watching) observer.unobserve(watching);
+							watching = column;
+							observer.observe(column);
+						}
+						return;
+					}
+					const areaBottom = areaBox.bottom;
 					// 要避开的是底栏里的「设置」那一行（宿主的 sidebar.settings 槽，槽是空盒子，
 					// 取它第一个有高度的祖先）。它上面那条 footerActions 在整屏侧栏铺开时画在
 					// 侧栏之下、看不见，也跟着一起让就会空出一块。找不到那一行时退回 regionArea 下沿。
@@ -200,7 +211,7 @@
 						const box = node.getBoundingClientRect();
 						if (box.height > 0 && box.top >= areaBottom - 1) { anchor = box.top; break; }
 					}
-					settle(Math.max(0, Math.round(own.getBoundingClientRect().bottom - (anchor === null ? areaBottom : anchor))));
+					settle(Math.max(0, Math.round(ownBox.bottom - (anchor === null ? areaBottom : anchor))));
 					if (observer && watching !== column) {
 						if (watching) observer.unobserve(watching);
 						watching = column;
@@ -297,11 +308,11 @@
 					batch.forEach(function (id) { attemptedPreviewIds.current.delete(id); });
 				});
 			}, [history, historyGroupState, historyManagerOpen]);
-			const removedChatsHandler = React.useRef(null);
+			const unavailableSessionsHandler = React.useRef(null);
 			React.useEffect(function () {
-				function onRemoved(event) { if (removedChatsHandler.current) removedChatsHandler.current(event.detail && event.detail.sessionIds || []); }
-				window.addEventListener("dsh-tavern-chats-removed", onRemoved);
-				return function () { window.removeEventListener("dsh-tavern-chats-removed", onRemoved); };
+				function onUnavailable(event) { if (unavailableSessionsHandler.current) unavailableSessionsHandler.current(event.detail?.sessionIds || []); }
+				window.addEventListener("dsh-tavern-sessions-unavailable", onUnavailable);
+				return function () { window.removeEventListener("dsh-tavern-sessions-unavailable", onUnavailable); };
 			}, []);
 			function toggleChatSelection(chatId) {
 				if (busy) return;
@@ -318,14 +329,8 @@
 					const removed = outcome.removed;
 					setSelectedChats(failures.map(function (result) { return result.chatId; }));
 					setDeleteNotice("已删除 " + removed.length + " 个" + (failures.length ? "，" + failures.length + " 个失败，可重试" : ""));
+					await leaveUnavailableConversation(outcome.unavailableSessionIds, true);
 					if (failures.length) setError(failures.map(function (result) { const item = items.find(function (item) { return item.chatId === result.chatId; }); return (item && (item.title || item.cardName) || result.chatId) + "：" + result.error; }).join("\n"));
-					if (items.some(function (item) { return item.sessionId === current && removed.includes(item.chatId); })) {
-						props.sessions.clear();
-						// A failed deletion can leave the selected chat in the archive.
-						const next = activeHistory.find(item => !selectedChats.includes(item.chatId));
-						if (next) await openSessionWhenReady(next.sessionId);
-						else { await openBlankConversation(); openPicker("cards"); }
-					}
 					// Deleting a chat never touches cards, so reload only the history list.
 					await refresh(["sessions"]);
 				} catch (error) { setError(String(error.message || error)); await refresh(); }
@@ -341,7 +346,7 @@
 				setBusy(true); setError(""); setDeleteNotice("");
 				const failures = [];
 				let next = 0;
-				let archivedCount = 0;
+				const changedSessionIds = [];
 				async function worker() {
 					for (;;) {
 						const index = next++;
@@ -350,22 +355,16 @@
 						try {
 							if (archive) await props.archiveSession(item.sessionId);
 							else await props.workspaces.unarchiveSession(item.sessionId);
-							archivedCount++;
-						} catch (err) { failures.push((item.title || item.cardName || item.chatId) + "：" + String(err && err.message || err)); }
+							changedSessionIds.push(item.sessionId);
+						} catch (err) { failures.push({ chatId: item.chatId, message: (item.title || item.cardName || item.chatId) + "：" + String(err && err.message || err) }); }
 					}
 				}
 				try {
 					await Promise.all(Array.from({ length: Math.min(4, items.length) }, worker));
-					if (archive && items.some(function (item) { return item.sessionId === current; })) {
-						props.sessions.clear();
-						const archivedIds = new Set(items.map(function (item) { return item.sessionId; }));
-						const alternative = activeHistory.find(function (entry) { return !archivedIds.has(entry.sessionId); });
-						if (alternative) await openSessionWhenReady(alternative.sessionId);
-						else await openBlankConversation();
-					}
-					setSelectedChats([]);
-					setDeleteNotice((archive ? "已归档 " : "已恢复 ") + archivedCount + " 个对话" + (failures.length ? "，" + failures.length + " 个失败" : ""));
-					if (failures.length) setError(failures.slice(0, 10).join("\n"));
+					setSelectedChats(failures.map(result => result.chatId));
+					setDeleteNotice((archive ? "已归档 " : "已恢复 ") + changedSessionIds.length + " 个对话" + (failures.length ? "，" + failures.length + " 个失败" : ""));
+					if (archive) await leaveUnavailableConversation(changedSessionIds);
+					if (failures.length) setError(failures.slice(0, 10).map(result => result.message).join("\n"));
 					await refresh(["sessions"]);
 				} catch (err) { setError(String(err && err.message || err)); }
 				finally { setBusy(false); }
@@ -860,7 +859,7 @@
 				finally { setBusy(false); }
 			}
 			async function readChatImportFile(file) {
-				if (file.size > 8 * 1024 * 1024) throw new Error("聊天文件最大支持 8 MB");
+				if (file.size > 24 * 1024 * 1024) throw new Error("聊天文件最大支持 24 MiB");
 				return await file.text();
 			}
 			// 多份记录共用这张人物卡与同一个玩家称呼，预览合并成一次确认。
@@ -925,10 +924,8 @@
 					const hint = misplacedFileHint(file, true);
 					if (hint) throw new Error(hint);
 					if (file.size > 256 * 1024 * 1024) throw new Error("存档文件太大（上限 256 MB）。");
-					const bytes = new Uint8Array(await file.arrayBuffer());
-					let binary = "";
-					for (let index = 0; index < bytes.length; index += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
-					const imported = await call("importGameSave", { fileB64: btoa(binary) });
+					const uploadId = await uploadTavernCardFile(file, () => {});
+					const imported = await call("importGameSave", { uploadId });
 					notifyDataChanged(["cards", "sessions"]);
 					closePicker();
 					await finishPendingOpen({ sessionId: imported.sessionId, targetMode: "story" });
@@ -1054,8 +1051,7 @@
 			async function stageOpens(card) {
 				if (!card.openingPage) return false;
 				try {
-					if ((await call("getStageRuntimeStatus", {}))?.status !== "ready") return false;
-					return (await call("getCardAssetBindings", { path: card.path, metadataOnly: true }))?.effectiveStage?.stage === true;
+					return (await call("prepareCardStage", { path: card.path }))?.stage === true;
 				} catch (error) { console.warn("dsh-tavern: 读不到舞台设置，改用游戏准备", error); return false; }
 			}
 			function whenStageAvailable(run) {
@@ -1256,12 +1252,7 @@
 				try {
 					if (archive) {
 						await props.archiveSession(item.sessionId);
-						if (current === item.sessionId) {
-							props.sessions.clear();
-							const next = activeHistory.find(entry => entry.sessionId !== item.sessionId);
-							if (next) await openSessionWhenReady(next.sessionId);
-							else await openBlankConversation();
-						}
+						await leaveUnavailableConversation([item.sessionId]);
 					} else {
 						await props.workspaces.unarchiveSession(item.sessionId);
 					}
@@ -1270,6 +1261,7 @@
 			}
 			async function removeChat(item) {
 				const outcome = await deleteTavernChats([item], props.archiveSession);
+				await leaveUnavailableConversation(outcome.unavailableSessionIds, true);
 				if (outcome.failures.length) throw new Error(outcome.failures[0].error);
 			}
 			async function deleteConversation(item, currentTitle) {
@@ -1278,11 +1270,6 @@
 				setBusy(true); setError("");
 				try {
 					await removeChat(item);
-					if (current === item.sessionId) {
-						const next = activeHistory.find(entry => entry.sessionId !== item.sessionId);
-						if (next) await openSessionWhenReady(next.sessionId);
-						else { await openBlankConversation(); openPicker("cards"); }
-					}
 				} catch (err) { setError(String(err && err.message || err)); }
 				// Deleting a chat never touches cards, so reload only the history list; a failed
 				// deletion reloads it too, or the row would stay listed as it was before.
@@ -1374,13 +1361,21 @@
 			const groupedActiveHistory = React.useMemo(function () {
 				return uiMode === "play" ? groupTavernHistory(orderedActiveHistory, summaries, historyOrder) : [];
 			}, [uiMode, orderedActiveHistory, summaries, historyOrder]);
-			// Deleting a card elsewhere may remove the chat open here; never leave it on screen.
-			removedChatsHandler.current = function (sessionIds) {
-				if (!sessionIds.includes(current)) return;
-				props.sessions.clear();
-				const next = activeHistory.find(function (item) { return !sessionIds.includes(item.sessionId); });
-				if (next) openSessionWhenReady(next.sessionId).catch(function (err) { setError(String(err && err.message || err)); });
-				else void openBlankConversation().then(function () { openPicker("cards"); });
+			async function leaveUnavailableConversation(sessionIds, showPicker) {
+				// A deletion can take long enough for the host to switch views on its own.
+				const openSession = tavernMainSessionId(props.sessions);
+				if (!sessionIds.includes(openSession || current)) return;
+				if (openSession) props.sessions.clear();
+				const removing = tavernChatRemovals.getSnapshot();
+				const next = activeHistory.find(item => !sessionIds.includes(item.sessionId) && !removing.has(item.chatId));
+				if (next) await openSessionWhenReady(next.sessionId);
+				else {
+					await openBlankConversation();
+					if (showPicker) openPicker("cards");
+				}
+			}
+			unavailableSessionsHandler.current = function (sessionIds) {
+				void leaveUnavailableConversation(sessionIds, true).catch(err => setError(String(err && err.message || err)));
 			};
 			// The host writes a reply (or a workbench task) through the native chat, so `sessionStatus` knows a
 			// conversation is generating. The Tavern sidebar replaced the host's session tree, so this row is the
@@ -1484,11 +1479,12 @@
 				growHistoryWindow();
 			}
 			// 窗口还没填满容器时列表不滚动，滚动事件永远不来：补一次成屏。
+			// 抽屉在屏外挂载帧（content-visibility: hidden）里 clientHeight 为 0，不能误判为未填满而把全部历史一次性灌进 DOM。
 			React.useEffect(function () {
 				if (collapsed) return;
 				const el = sideListRef.current;
 				if (!el || historyWindow >= historyCeiling) return;
-				if (el.scrollHeight > el.clientHeight + 4) return;
+				if (el.clientHeight <= 0 || el.scrollHeight > el.clientHeight + 4) return;
 				growHistoryWindow();
 			}, [collapsed, historyWindow, historyCeiling, uiMode, archiveExpanded, historyGroupState, history.length]);
 			// 侧栏收起时不构建整张历史 VDOM 树，避免流式输出期间每次状态变化都白算全部会话行。
@@ -1790,8 +1786,12 @@
 			const latestBuildLabel = (updateStatus.latestCommit || "").slice(0, 7) || updateStatus.latestVersion || "";
 			const updateAvailableQuiet = updateStatus.phase === "update-available" && !updateStatus.checkWarning && Boolean(latestBuildLabel);
 			const updateTargetLabel = updateAvailableQuiet ? " → " + latestBuildLabel : "";
+			// 移动端详情行仅在更新过程/结果态显示，非更新态（含带 checkWarning 的检查结果）隐藏；
+			// 发现新构建时缩短版版本行始终附带目标构建，避免隐藏详情行后看不到目标构建。
+			const updateTargetCompactLabel = updateStatus.phase === "update-available" && Boolean(latestBuildLabel) ? " → " + latestBuildLabel : "";
+			const mobileUpdateDetailVisible = ["running", "cancelling", "blocked", "completed", "failed", "repair-required", "installed-restart-required", "restart-required"].includes(updateStatus.phase);
 			const updateIdentityText = updateStatusLoading ? "DSH Tavern · DSH 0.2.1" : "DSH Tavern " + currentVersionLabel + " · DSH 0.2.1 · " + currentCommitLabel + updateTargetLabel;
-			const updateIdentityCompactText = updateStatusLoading ? "DSH Tavern · DSH 0.2.1" : currentVersionLabel + " · " + currentCommitLabel + updateTargetLabel;
+			const updateIdentityCompactText = updateStatusLoading ? "DSH Tavern · DSH 0.2.1" : currentVersionLabel + " · " + currentCommitLabel + updateTargetCompactLabel;
 			const checkingOrRunning = updater.current?.isBusy(updateStatus) ?? false;
 			const awaitingDesktopRestart = updateStatus.phase === "completed" && updateStatus.host === "desktop" && updateStatus.requiresRestart;
 			const cancelSupported = ["running", "cancelling"].includes(updateStatus.phase) && updateStatus.cancellable === true;
@@ -1842,7 +1842,7 @@
 							h("span", { className: "dsh-tavern-update-identity-compact" }, updateIdentityCompactText)),
 						updateActions),
                     h(TavernHostCompatibility),
-					!updateMessage || updateStatus.phase === "idle" || updateStatus.phase === "loading" || upToDateQuiet || updateAvailableQuiet ? null : h("div", { className: "dsh-tavern-update-status" + (updateStatus.phase === "failed" || updateStatus.phase === "check-failed" || updateStatus.phase === "blocked" || updateStatus.stalled ? " error" : ""), role: "status" }, updateMessage)
+					!updateMessage || updateStatus.phase === "idle" || updateStatus.phase === "loading" || upToDateQuiet || updateAvailableQuiet ? null : h("div", { className: "dsh-tavern-update-status" + (updateStatus.phase === "failed" || updateStatus.phase === "check-failed" || updateStatus.phase === "blocked" || updateStatus.stalled ? " error" : ""), role: "status", "data-mobile-update-detail": mobileUpdateDetailVisible ? "visible" : "hidden" }, updateMessage)
 				),
 				!collapsed ? portalOverlay(historyManagerPanel) : null,
 				!collapsed && (openingPicker || (picking && uiMode === "play")) ? portalOverlay(h("div", { key: "play-picker", className: "dsh-tavern-picker-overlay", style: { display: picking && uiMode === "play" && !cardUpdate.open ? undefined : "none" }, onMouseDown: function (event) { if (event.target === event.currentTarget) closePicker(); } }, playPicker)) : null,

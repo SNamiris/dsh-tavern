@@ -220,6 +220,51 @@ test('移动端侧栏整屏铺开，右上角有收回按钮，▾ 仍然在行�
   assert.doesNotMatch(css, /\.dsh-tavern-side-row-preview \{ -webkit-line-clamp: 2; \}/)
 })
 
+test('Windows 酒馆标志紧跟标题栏，收起按钮仍可点击', async t => {
+  const { chromium } = await import('playwright')
+  const browser = await chromium.launch({ headless: true })
+  t.after(() => browser.close())
+  const page = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  await page.setContent(`<!doctype html><html data-windows-titlebar><head><style>
+    body { margin: 0; padding-top: 40px; }
+    .host_root { display: flex; flex-direction: column; width: 300px; height: 720px; padding: 6px 8px; }
+    .host_logoRow { flex: none; height: 40px; overflow: hidden; }
+    .host_toggle { position: fixed; top: 6px; left: 12px; width: 28px; height: 28px; }
+    .host_newSessionRow { display: flex; flex: none; margin-top: 6px; }
+    .host_scrollRegion { position: relative; margin-top: 4px; }
+    [data-sidebar-scrollport] { display: grid; grid-template-rows: 8px 0 2px max-content; }
+    .host_regionArea { grid-row: 4; }
+  </style></head><body class="dsh-tavern-shell-active">
+    <div class="host_root">
+      <div class="host_logoRow">
+        <span class="host_brand">DSH</span>
+        <button class="host_toggle" aria-label="收起侧栏" onclick="this.dataset.clicked = 'true'">◧</button>
+      </div>
+      <div class="host_newSessionRow"><div data-slot="sidebar.session.action"><button aria-label="新建会话">＋</button></div></div>
+      <div class="host_scrollRegion"><div data-sidebar-scrollport>
+        <div class="host_regionArea"><div data-slot="sidebar.workspaces">
+          <div class="dsh-tavern-sidebar">
+            <div class="dsh-tavern-side-head"><div class="dsh-tavern-side-brand"></div></div>
+            <div class="dsh-tavern-mode-switch"><button>游玩</button><button>卡片</button></div>
+          </div>
+        </div></div>
+      </div></div>
+    </div>
+  </body></html>`)
+  await page.addStyleTag({ content: css })
+  const brand = () => page.locator('.dsh-tavern-side-brand').boundingBox()
+  assert.equal((await brand()).y, 50, '标题栏以下只留正常边距')
+  await page.addStyleTag({ content: readFileSync(new URL('../tavern-plugin/packages/dsh-dream-skin/lib/skins/paper.css', import.meta.url), 'utf8') })
+  const paperBrand = await brand()
+  assert.equal(paperBrand.y, 50, '纸感主题也不叠加额外顶部内边距')
+  const modeSwitch = await page.locator('.dsh-tavern-mode-switch').boundingBox()
+  assert.ok(modeSwitch.y >= paperBrand.y + paperBrand.height, '模式切换位于标志下方')
+  const toggle = page.getByRole('button', { name: '收起侧栏' })
+  assert.equal((await toggle.boundingBox()).y, 6)
+  await toggle.click({ timeout: 2000 })
+  assert.equal(await toggle.getAttribute('data-clicked'), 'true')
+})
+
 test('宽屏管理面板在移动端铺满卡片正文宽度、动作按钮下沉且 portal 压过宿主壳层', async t => {
   assert.match(sidebar, /portalOverlay\(historyManagerPanel\)/)
   assert.match(css, /\.dsh-tavern-picker-overlay \{ position: fixed; z-index: 1450;/)

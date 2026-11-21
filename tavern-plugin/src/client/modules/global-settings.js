@@ -121,7 +121,7 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
             React.createElement(TavernDefaultModelSetting, { label: "卡片工作台默认模型", title: "工作台模型", description: "卡片工作台里创建和修改人物卡", fallback: "跟随前台", selection: state.defaultWorkbenchModel, catalog: state.modelCatalog, disabled: state.loading || state.busy, onChange: selection => saveDefault("defaultWorkbenchModel", selection) }),
             React.createElement(TavernDefaultModelSetting, { label: "前台对话压缩模型", title: "压缩模型", description: "用于整理较早的前台对话内容（手动 /compact 与自动压缩）；设为「跟随前台」时使用当前对话的前台模型", fallback: "跟随前台", selection: state.defaultCompactionModel, catalog: state.modelCatalog, disabled: state.loading || state.busy, onChange: selection => saveDefault("defaultCompactionModel", selection) }),
             null),
-                // the core's own slots; the stage's and its mods' (手机 · 通话模型) are on 设置 › 舞台 › 舞台模型.
+                // the core's own slots; the stage's and its mods' (手机 · 通话模型) are on 舞台配置 › 舞台模型.
                 h(TavernModelSlotGroups,{slots:state.modModelSlots.filter(slot=>slot.owner === 'core'),values:state.settings?.modModels,catalog:state.modelCatalog,scoringCatalog:state.scoringCatalog,disabled:state.loading || state.busy,onChange:saveSlot})),
             group("开局默认", "开局时继承，开局后可在本局设置中单独修改。",
                 state.settings ? h(GlobalPlayDefaults, { settings: state.settings }) : null,
@@ -189,47 +189,24 @@ function createGlobalSettingsModule({ React, rpc, notifySettingsChanged, TavernD
                 h("p", null, "给酒馆加功能：粘贴插件作者的 GitHub 地址，或上传 ZIP 安装包。不支持 SillyTavern 插件。"),
                 h(TavernUserPluginsSettings)));
     }
-    // 设置 › 舞台 is the stage package's page (global-settings.js in dsh-tavern-stage, stageViews.GlobalSettings): opening it holds the
-    // stage client (stage-client-loader.cjs hold) so the page loads for any card; the core only draws the wait. The names the
-    // page needs from the core travel as the stage view options (gal-stage.js bindStageViews, globalSettings);
+    // Opening this workbench loads its settings even without an open game.
     const stageGlobalSettingsOptions = {rpc, notifySettingsChanged, TavernModelSlotGroups, SettingsGroup, SpineRuntimeEntry, ForkModManagerEntry};
-    function TavernStageSettingsSection() {
+    function TavernStageConfigTab() {
         const h = React.createElement;
         React.useEffect(() => galStageHold(), []);
         const enabled = React.useSyncExternalStore(galStageAvailable.subscribe, galStageAvailable.get);
-        const [runtime, setRuntime] = React.useState(null), [busy, setBusy] = React.useState(false), [error, setError] = React.useState("");
+        const [error, setError] = React.useState("");
         React.useEffect(() => {
-            let active = true, timer;
-            async function refresh() {
-                try {
-                    const value = await rpc("getStageRuntimeStatus", {});
-                    if (!active) return;
-                    setRuntime(value);
-                    if (["loading", "loaded"].includes(value.status)) timer = setTimeout(refresh, 500);
-                } catch (err) { if (active) setError(err.message); }
-            }
-            if (!busy) void refresh();
-            return () => { active = false; clearTimeout(timer); };
-        }, [enabled, busy]);
-        async function set(method, value) {
-            setBusy(true); setError("");
-            try { setRuntime(await rpc(method, {enabled:value})); }
-            catch (err) { setError(err.message); }
-            finally { setBusy(false); }
-        }
+            let active = true;
+            rpc("prepareStageWorkbench", {}).then(runtime => {
+                if (active && runtime.status !== "ready") setError(runtime.installed ? "舞台配置暂时无法加载" : "舞台插件不可用");
+            }, err => { if (active) setError(err.message); });
+            return () => { active = false; };
+        }, []);
         const Page = enabled && stageViews ? stageViews.GlobalSettings : null;
-        return h(React.Fragment, null,
-            h("div", {className:"dsh-tavern-settings-section dsh-tavern-global-settings"},
-                h(SettingsGroup, {title:"舞台启动"},
-                    runtime?.installed ? h(TavernSettingRow, {title:"启动时加载舞台", help:"关闭后，下次启动会跳过舞台。需要时可以在这里为本次运行加载舞台。"},
-                        h(Switch, {label:"启动时加载舞台", checked:runtime.loadOnStartup !== false, disabled:busy, onChange:value => set("setStageLoadOnStartup", value)})) : null,
-                    !Page && runtime?.installed && (!runtime.enabled || runtime.status === "failed") ?
-                        h("button", {type:"button", className:"dsh-tavern-btn", disabled:busy, onClick:() => set("setStageEnabled", true)}, "本次加载舞台") : null,
-                    !Page && (!runtime || runtime.installed && runtime.enabled && runtime.status !== "failed") ?
-                        h("p", {className:"dsh-tavern-settings-desc", role:"status"}, "正在加载舞台…") : null,
-                    runtime?.installed === false ? h("p", {role:"status"}, "舞台插件不可用") : null,
-                    error ? h("p", {role:"alert"}, error) : null)),
-            Page ? h(Page) : null);
+        return h("div", {className:"fork-tab-scroll"},
+            h("div", {className:"dsh-tavern-settings-section dsh-tavern-global-settings dsh-tavern-stage-config", role:"region", "aria-label":"舞台配置"},
+                Page ? h(Page) : h("p", {className:"dsh-tavern-settings-desc", role:error ? "alert" : "status"}, error || "正在加载舞台配置…")));
     }
-    return { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, stageGlobalSettingsOptions };
+    return { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageConfigTab, stageGlobalSettingsOptions };
 }
