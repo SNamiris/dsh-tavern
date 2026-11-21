@@ -186,6 +186,49 @@ test('宿主半能挂上 createTavernPluginApi 并注册 fate-dice:* RPC，停�
   await assert.rejects(api.callHandler('fate-dice:free-roll', { expression: '1d20' }), /没有名为 fate-dice:free-roll 的插件处理函数/)
 })
 
+test('关闭命运之骰会撤下画像工具并丢弃待结算的画像', async t => {
+  const games = new Map(), handlers = new Map()
+  let tool, section, settle
+  const tavern = {
+    handle: (name, handler) => handlers.set(name, handler),
+    settlementSection: value => { section = value },
+    settlementTool: value => { tool = value },
+    onTurnSettled: handler => { settle = handler },
+    readPluginData: async () => ({ settings: { enabled: false, autoCheck: true } }),
+    savePluginData: async () => {},
+    readGameData: async ({ gameId }) => games.get(gameId),
+    saveGameData: async ({ gameId, data }) => games.set(gameId, data)
+  }
+  const dispose = applyFateDicePlugin({ tavern, inject() {}, effect: run => run() })
+  if (typeof dispose === 'function') t.after(dispose)
+  const game = { gameId: 'current', turn: 2, textVersion: 'test-v2' }
+  const call = { ...game, arguments: { gameId: 'foreign', characterName: '主角' } }
+  const configure = settings => handlers.get('fate-dice:save-global-settings')({ settings })
+
+  assert.equal(await tool.enabledFor(game), false)
+  assert.equal(await section.text(game), '')
+  assert.equal((await tool.execute(call)).ok, false)
+  await settle(game)
+  assert.equal(games.size, 0)
+
+  await configure({ enabled: true })
+  assert.equal(await tool.enabledFor(game), true)
+  assert.match(await section.text(game), /fate_dice_profile_sync/)
+  assert.equal((await tool.execute(call)).gameId, 'current')
+  await configure({ enabled: false })
+  await settle(game)
+  assert.equal(games.size, 0)
+
+  await configure({ enabled: true })
+  await tool.execute(call)
+  await settle(game)
+  assert.equal(games.get('current')?.characterProfile?.characterName, '主角')
+  assert.equal(games.has('foreign'), false)
+  await configure({ autoCheck: false })
+  assert.equal(await tool.enabledFor(game), false)
+  assert.equal((await tool.execute(call)).ok, false)
+})
+
 test('服务端 fate-dice:read-turns：空局零历史扫描，开启态命中内存锁与正负缓存并在时间线变更时精准失效', async () => {
   const gameStore = new Map()
   const turnStore = new Map()
@@ -1115,6 +1158,9 @@ test('全套 6 项升级：免骰直通 / 双骰对抗与3D左右碰撞 / 提示
   assert.equal(stageSpec.diceSpecs.length, 4)
   assert.equal(stageSpec.diceSpecs.filter(d => d.side === 'ally').length, 2)
   assert.equal(stageSpec.diceSpecs.filter(d => d.side === 'rival').length, 2)
+  assert.equal(stageSpec.contestMeta?.rivalLabel, '哥布林剑士')
+  assert.equal(stageSpec.contestMeta?.allyTotal, contestRoll.total)
+  assert.equal(stageSpec.contestMeta?.rivalTotal, contestRoll.contest.rivalTotal)
 
   const stage = new FD3D.CinematicDiceStage({
     getBoundingClientRect: () => ({ width: 800, height: 320 }),
@@ -1138,6 +1184,11 @@ test('全套 6 项升级：免骰直通 / 双骰对抗与3D左右碰撞 / 提示
   assert.equal(stage.dice.length, 4)
   assert.ok(stage.dice[0].trajPos[0] < 0, '我方骰应从左翼抛入')
   assert.ok(stage.dice[2].trajPos[0] > 0, '对手骰应从右翼抛入')
+  for (const d of stage.dice) {
+    const endX = d.trajPos[d.settleStep * 3]
+    if (d.side === 'ally') assert.ok(endX < -15, `我方骰应严格落定在左半区，实际 x=${endX}`)
+    if (d.side === 'rival') assert.ok(endX > 15, `对手骰应严格落定在右半区，实际 x=${endX}`)
+  }
 
   // 5) 宿命序列（无小模型真骰带）与局势/奇遇骰端到端接线
   const tape = generateFateTape({ rule: '2d6', count: 6 }, () => 4)
@@ -1222,4 +1273,102 @@ test('全套 6 项升级：免骰直通 / 双骰对抗与3D左右碰撞 / 提示
   } finally {
     for (const fn of cleanups.splice(0)) fn()
   }
+})
+
+test('双骰对抗识别：扩充词表 + 决策模型与阻尼器语义题 is_contest / fd_contest', async () => {
+  const {
+    detectContestIntent,
+    heuristicAssess,
+    judgeActionDifficulty,
+    resolveContestCheckType,
+  } = await import('../tavern-plugin/packages/dsh-tavern-fate-dice/lib/difficulty-judge.js')
+  const {
+    buildDamperJudgeQuestions,
+    resolveCheckFromDamperContext,
+  } = await import('../tavern-plugin/packages/dsh-tavern-fate-dice/lib/damper-bridge.js')
+
+  // 1) 兜底词表覆盖通用战斗 + 武侠 / 仙侠 / 现代 / 比赛 / 赌博等常见正面交锋表达
+  assert.equal(detectContestIntent('我护着安雅和灰枭打斗对抗', 'physical'), true)
+  assert.equal(detectContestIntent('与走廊里的守卫激战', 'physical'), true)
+  assert.equal(detectContestIntent('冲上去抢夺对方手里的钥匙', 'physical'), true)
+  assert.equal(detectContestIntent('与华山掌门在擂台比武切磋、对掌拼内力', 'physical'), true)
+  assert.equal(detectContestIntent('祭出飞剑与魔修斗法，神识交锋', 'arcana'), true)
+  assert.equal(detectContestIntent('在高速上飙车追车并和匪徒火拼', 'physical'), true)
+  assert.equal(detectContestIntent('在法庭辩论中当场质证对方律师', 'social'), true)
+  assert.equal(detectContestIntent('进入加时赛点球决胜争夺冠军', 'physical'), true)
+  assert.equal(detectContestIntent('在德州扑克牌局里直接梭哈诈唬庄家', 'social'), true)
+  assert.equal(detectContestIntent('我护着安雅和灰枭打斗对抗', 'insight'), false)
+  const h = heuristicAssess({ input: '我护着安雅和灰枭打斗对抗' })
+  assert.equal(h.shouldRoll, true)
+  assert.equal(h.checkType, 'contest')
+  assert.equal(heuristicAssess({ input: '在赌局里直接梭哈和庄家对赌' }).checkType, 'contest')
+  assert.equal(heuristicAssess({ input: '和魔修斗法较量' }).checkType, 'contest')
+
+  // 2) resolveContestCheckType 优先采信 AI 语义概率，高概率触发、低概率抑制、模糊或缺失回退词表
+  assert.equal(
+    resolveContestCheckType({ input: '我死死抵住门板不让门外的人推开', category: 'physical', hidden: false, contestProb: 0.85 }),
+    'contest'
+  )
+  assert.equal(
+    resolveContestCheckType({ input: '我回忆起那场惨烈的战斗，叹了口气', category: 'will', hidden: false, contestProb: 0.1 }),
+    'normal'
+  )
+  assert.equal(
+    resolveContestCheckType({ input: '安雅和灰枭打斗对抗', category: 'physical', hidden: false, contestProb: 0.45 }),
+    'contest'
+  )
+  assert.equal(
+    resolveContestCheckType({ input: '安雅和灰枭打斗对抗', category: 'physical', hidden: true, contestProb: 0.95 }),
+    'normal'
+  )
+
+  // 3) 决策模型 judgeActionDifficulty 发送 is_contest 题并正确消费
+  let capturedQuestions = null
+  const mockTavern = {
+    capabilities: { decisionJudge: true },
+    async decisionJudgeStatus() {
+      return { available: true, provider: 'gemini', capabilities: { choice: true, score: true } }
+    },
+    async judgeDecision({ questions }) {
+      capturedQuestions = questions
+      return {
+        provider: 'gemini',
+        judgeTier: 'full',
+        answers: {
+          needs_check: { probability: 0.9 },
+          difficulty_tier: { choice: 'hard' },
+          character_capability: { score: 2 },
+          check_category: { choice: 'physical' },
+          situation_edge: { score: 1 },
+          is_contest: { probability: 0.88 },
+        },
+      }
+    },
+  }
+  const judged = await judgeActionDifficulty({
+    tavern: mockTavern,
+    input: '我死死抵住门板不让灰枭撞开',
+  })
+  assert.ok(capturedQuestions.some(q => q.id === 'is_contest' && q.type === 'noul'))
+  assert.equal(judged.checkType, 'contest')
+
+  // 4) 阻尼器合并题包含 fd_contest 并正确解析
+  const geminiQs = buildDamperJudgeQuestions({ protocol: 'gemini', autoProfile: true })
+  assert.ok(geminiQs.some(q => q.id === 'fd_contest' && q.type === 'noul'))
+  const noulQs = buildDamperJudgeQuestions({ protocol: 'noul', autoProfile: true })
+  assert.ok(noulQs.some(q => q.id === 'fd_contest' && q.type === 'noul'))
+
+  const damperRes = resolveCheckFromDamperContext({
+    input: '我死死抵住门板不让灰枭撞开',
+    damperContext: {
+      answers: {
+        fd_needs_check: { probability: 0.85 },
+        fd_difficulty: { choice: 'hard' },
+        fd_capability: { score: 2 },
+        fd_domain: { choice: 'physical' },
+        fd_contest: { probability: 0.82 },
+      },
+    },
+  })
+  assert.equal(damperRes.checkType, 'contest')
 })

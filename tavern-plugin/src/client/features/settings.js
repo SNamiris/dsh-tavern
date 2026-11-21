@@ -103,8 +103,8 @@
                 catch (err) { setError(String(err.message || err)); } finally { setBusy(false); }
             }
             // on 设置 › DSH Tavern the defaults are a card of switch rows, each skill's
-            // description behind its 「?」; the 本局 panel keeps its own layout below.
-            if (props.globalDefaults) return h("section", { className: "dsh-local-section dsh-tavern-default-skills", "aria-label": "默认写作 Skill" },
+            // description behind its 「?」. 本局设置 draws its own section (conversation-settings.js SessionWritingSkills).
+            return h("section", { className: "dsh-local-section dsh-tavern-default-skills", "aria-label": "默认写作 Skill" },
                 h("h3", null, "默认写作 Skill", typeof HelpTip === "function" ? h(HelpTip, { label: "默认写作 Skill 说明" }, "新游戏默认启用哪些写作 Skill；已有游戏不变，可在本局设置里逐项调整。") : null),
                 (skills || []).map(skill => h(TavernSettingRow, { key: skill.name, title: skill.name, help: skill.description, className: "dsh-tavern-writing-skill" },
                     h(Switch, { label: skill.name, checked: skill.enabled, disabled: busy, onChange: enabled => change(skill.name, enabled) }))),
@@ -112,16 +112,6 @@
                 !skills && !error ? h("div", { className: "dsh-tavern-settings-loading" }, h(Spinner)) : null,
                 error ? h("p", { role: "alert", className: "dsh-tavern-settings-alert" }, "⚠ " + error, " ", h("button", { type: "button", className: "dsh-tavern-text-btn", onClick: load }, "重新加载")) : null,
                 !error && (busy || notice) ? h("p", { role: "status", className: "dsh-tavern-gs-notice" }, busy ? "保存中…" : "已保存") : null);
-            return h(props.globalDefaults ? "details" : "section", { className: "dsh-local-section" + (props.globalDefaults ? " dsh-tavern-default-skills" : ""), "aria-label": props.globalDefaults ? "默认写作 Skill" : "写作 Skill" },
-                props.globalDefaults ? h("summary", null, "默认写作 Skill") : h("h3", null, "写作 Skill"),
-                h("p", { className: "dsh-local-help" }, props.globalDefaults ? "设置新游戏默认启用的写作 Skill。已有游戏不变，可在本局设置中逐项调整。" : "开局采用全局默认配置，可在此逐项调整本局后续加载；前台按场景选用。"),
-                (skills || []).map(skill => h("div", { key: skill.name, className: "dsh-tavern-background-task dsh-tavern-writing-skill" },
-                    h("label", { className: "dsh-tavern-writing-skill-heading" }, h("span", null, skill.name), h("input", { type: "checkbox", role: "switch", "aria-label": skill.name, checked: skill.enabled, disabled: busy, onChange: event => change(skill.name, event.target.checked) })),
-                    h("p", { className: "dsh-tavern-settings-desc" }, skill.description))),
-                skills && !skills.length ? h(EmptyState, { compact: true, noun: "写作 Skill" }) : null,
-                !props.globalDefaults ? h("p", { className: "dsh-local-help" }, "开关立即更新，后续模型请求生效；已发出的请求不受影响。通过追加通知保留已有缓存前缀，关闭后停止沿用该 Skill，历史内容保留。") : null,
-                error ? h("p", { role: "alert" }, error) : h("span", { role: "status" }, busy ? "保存中…" : skills ? notice : "正在读取…"),
-                error ? h("button", { className: "dsh-tavern-btn", onClick: load }, "重新加载") : null);
         }
 
         function TavernDefaultModelSetting(props) {
@@ -433,7 +423,8 @@
                     options: [{ value: "after-fill", label: "选择一项后即隐藏" }, { value: "after-send", label: "可选择多项发送后才隐藏" }] }));
         }
 
-        // 设置 → DSH Tavern → 插件：粘贴 GitHub 地址或上传 ZIP 安装，列出已装插件与加载情况。
+        // 设置 → 酒馆插件：安装插件并管理已装的插件。
+        const canCheckPluginUpdates = ({ source }) => source?.kind === "github" || (source?.kind === "builtin" && Boolean(source.releaseRepo));
         function TavernUserPluginsSettings(props = {}) {
             const [manageOpen, setManageOpen] = React.useState(false);
             const h = React.createElement;
@@ -448,13 +439,16 @@
             function updateSummary(next) {
                 const items = Object.keys(next).map(function (folder) { return next[folder]; });
                 const available = items.filter(function (item) { return item.status === "available"; }).length;
+                const blocked = items.filter(function (item) { return item.status === "blocked"; }).length;
                 const failed = items.filter(function (item) { return item.status === "error"; }).length;
-                if (!items.length) return { text: "没有从 GitHub 安装的插件，无需检查更新。", failed: false };
+                const results = [
+                    available && "有 " + available + " 个插件可以更新",
+                    blocked && "有 " + blocked + " 个插件的新版暂不可安装",
+                    failed && failed + " 个插件检查失败"
+                ].filter(Boolean);
                 return {
                     failed: failed > 0,
-                    text: failed
-                        ? "检查完成：" + (available ? available + " 个插件有新版，" : "") + failed + " 个插件检查失败。"
-                        : available ? "检查完成：有 " + available + " 个插件可以更新。" : "检查完成：没有发现新版本。"
+                    text: "检查完成：" + (results.join("，") || "没有发现新版本") + "。"
                 };
             }
             async function checkUpdates(announce) {
@@ -481,7 +475,7 @@
                 try {
                     const next = await rpc("listUserPlugins");
                     setData(next);
-                    if ((next.plugins || []).some(function (plugin) { return plugin.source && plugin.source.kind === "github"; })) await checkUpdates();
+                    if ((next.plugins || []).some(canCheckPluginUpdates)) await checkUpdates();
                     else setUpdates({});
                 } catch (err) { setError(String(err && err.message || err)); }
             }
@@ -536,6 +530,8 @@
             // Only offer an update when the latest Release is actually newer than what is installed.
             function updateAction(plugin) {
                 const info = updates && updates[plugin.folder];
+                const builtin = plugin.source.kind === "builtin";
+                if (builtin && (info?.status !== "available" || !info.target)) return null;
                 if (checking && !info) return null;
                 if (info && info.status === "latest") return null;
                 const latest = info && info.status === "available" ? String(info.latest || "").replace(/^v(?=\d)/i, "") : "";
@@ -543,13 +539,13 @@
                     : info && info.status === "ref" ? "这个插件固定在分支或标签上，更新会重新下载同一个分支或标签"
                         : info && info.status === "error" ? "检查更新失败：" + info.reason
                             : info && info.status === "unknown" ? "无法比较版本号（最新 Release：" + (info.latest || "未标注") + "），仍可手动更新" : undefined;
-                return h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, title: title, onClick: function () { void run(function () { return rpc("updateUserPlugin", { folder: plugin.folder }); }, installed); } }, latest ? "更新到 " + latest : "更新");
+                const args = builtin ? { folder: plugin.folder, target: info.target } : { folder: plugin.folder };
+                return h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || (builtin && checking), title: title, onClick: function () { void run(function () { return rpc("updateUserPlugin", args); }, installed); } }, latest ? "更新到 " + latest : "更新");
             }
             const stateLabel = { loaded: "已启用", pending: "刷新后生效", restart: "重启 DSH 后生效", failed: "加载失败", skipped: "未加载", disabled: "已停用" };
-            const sourceLabel = function (source) { return source.kind === "builtin" ? "内置插件 · 默认启用，随酒馆更新，不可删除" : source.kind === "github" ? "GitHub · " + source.repo + (source.resolved ? " · " + source.resolved : "") : source.kind === "zip" ? "ZIP 上传" : source.kind === "managed" ? (source.builtin ? "内置舞台模组 · 随酒馆提供" : "舞台模组 · 由模组管理器维护") : source.kind === "card" ? "人物卡附带 · 由人物卡管理，不可在此删除" : "手动放入"; };
-            // 内置插件（随酒馆发行、装进 plugins/ 的那几个）照常列出：可停用、随酒馆更新、不可删除。
-            // 只有内置舞台模组不进这个列表——它们在「管理模组」里。
-            const plugins = (data?.plugins || []).filter(plugin => !(plugin.source.kind === "managed" && plugin.source.builtin));
+            const sourceLabel = function (source) { return source.kind === "builtin" ? (source.releaseRepo ? "内置插件 · 支持单独更新" : "内置插件 · 默认启用，随酒馆更新，不可删除") : source.kind === "github" ? "GitHub · " + source.repo + (source.resolved ? " · " + source.resolved : "") : source.kind === "zip" ? "ZIP 上传" : source.kind === "managed" ? "舞台模组 · 由模组管理器维护" : "手动放入"; };
+            // 卡内插件由人物卡库管理，内置舞台模组在「管理模组」里。
+            const plugins = (data?.plugins || []).filter(({ source }) => source.kind !== "card" && !(source.kind === "managed" && source.builtin));
             return h("div", { className: "dsh-tavern-user-plugins" },
                 h("div", { className: "dsh-tavern-user-plugins-install" },
                     // the shared inline text field; Enter keeps the address, 安装 installs it.
@@ -563,25 +559,26 @@
                 error ? h("p", { className: "dsh-tavern-settings-error", role: "alert" }, error) : null,
                 plugins.length ? h("div", { className: "dsh-tavern-user-plugins-head" },
                     h("span", { className: "dsh-tavern-user-plugins-head-title" }, "已装的插件"),
-                    plugins.some(function (plugin) { return plugin.source.kind === "github"; })
+                    plugins.some(canCheckPluginUpdates)
                         ? h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || checking, onClick: function () { void checkUpdates(true); } }, checking ? "检查中…" : "检查更新")
                         : null) : null,
                 data && plugins.length === 0 ? h(EmptyState, { compact: true, noun: "插件" }) : null,
                 plugins.length ? h("ul", { className: "dsh-tavern-user-plugins-list" }, plugins.map(function (plugin) {
                     const managed = plugin.source.kind === "managed";
-                    const canToggle = !managed && (plugin.source.kind !== "card" || plugin.enabled === false);
+                    const updateInfo = updates && updates[plugin.folder];
                     return h("li", { key: plugin.folder, className: "dsh-tavern-user-plugin is-" + plugin.state },
                         h("div", { className: "dsh-tavern-user-plugin-copy" },
                             h("strong", null, plugin.name, plugin.version ? h("small", null, " " + plugin.version) : null,
                                 h("span", { className: "dsh-tavern-user-plugin-state", title: plugin.state === "restart" ? "插件文件已更新，重启 DSH 后会加载新版本，这里自动变回「已启用」" : undefined }, stateLabel[plugin.state] || plugin.state),
-                                plugin.source.kind === "github" ? updateBadge(plugin) : null),
+                                canCheckPluginUpdates(plugin) ? updateBadge(plugin) : null),
                             plugin.description ? h("span", null, plugin.description) : null,
                             h("span", { className: "dsh-tavern-user-plugin-source" }, sourceLabel(plugin.source)),
+                            plugin.source.kind === "builtin" && updateInfo?.reason ? h("span", { className: "dsh-tavern-user-plugin-source" }, updateInfo.reason) : null,
                             plugin.reason ? h("span", { className: "dsh-tavern-settings-error" }, plugin.reason) : null),
                         h("div", { className: "dsh-tavern-user-plugin-actions" },
-                            managed ? h("button", {type:"button", className:"dsh-tavern-btn", onClick:()=>setManageOpen(true)}, "管理模组") : h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy || !canToggle, title: canToggle ? undefined : "此模组由人物卡管理", onClick: function () { toggle(plugin); } }, canToggle ? (plugin.enabled === false ? "启用" : "停用") : "人物卡管理"),
-                            plugin.source.kind === "github" ? updateAction(plugin) : null,
-                            (managed || plugin.source.kind === "card" || plugin.source.kind === "builtin") ? null : h("button", { type: "button", className: "dsh-tavern-btn danger", disabled: busy, onClick: function () { void remove(plugin); } }, "删除")));
+                            managed ? h("button", {type:"button", className:"dsh-tavern-btn", onClick:()=>setManageOpen(true)}, "管理模组") : h("button", { type: "button", className: "dsh-tavern-btn", disabled: busy, onClick: function () { toggle(plugin); } }, plugin.enabled === false ? "启用" : "停用"),
+                            canCheckPluginUpdates(plugin) ? updateAction(plugin) : null,
+                            (managed || plugin.source.kind === "builtin") ? null : h("button", { type: "button", className: "dsh-tavern-btn danger", disabled: busy, onClick: function () { void remove(plugin); } }, "删除")));
                 })) : null,
                 manageOpen ? h(StagePackView, {view:ui=>ui.mods.ModManager, rpc, onClose:()=>setManageOpen(false)}) : null,
                 h("div", { className: "dsh-tavern-user-plugins-folder" },
@@ -590,12 +587,12 @@
         }
 
         // @include modules/global-settings.js
-        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageSettingsSection, stageGlobalSettingsOptions } = createGlobalSettingsModule({
+        const { TavernSettingsSection, TavernPluginsSettingsSection, TavernStageConfigTab, stageGlobalSettingsOptions } = createGlobalSettingsModule({
             React, rpc, notifySettingsChanged: () => { window.dispatchEvent(new CustomEvent("dsh-tavern-settings-changed")); notifyTavernDataChanged(["sessions"], "global-settings"); },
             // Process visibility and developer chrome have separate rows; 配音 has its own settings page.
             TavernDefaultModelSetting, TavernModelSlotGroups, TavernConversationWritingSkills, DisplayPreferencesSettings, HeaderItemsSettings,
             CandidatePreferencesSettings, PromptTemplateSettingsEntry, ContextCompactionSettings, TavernUserPluginsSettings, DebugSetting, SpineRuntimeEntry,
-            // 设置 › 舞台 › 模组管理 (mod-manager.js), a stage package page: drawn once the stage client binds it (StagePackView).
+            // 舞台配置 › 舞台模组 (mod-manager.js), drawn once the stage client binds it.
             ForkModManagerEntry: () => React.createElement(StagePackView, { view: ui => ui.ModManagerEntry, rpc, Row: TavernSettingRow }),
             // the shared row and controls of the page.
             TavernSettingRow, InlineField, Switch, HelpTip: typeof HelpTip === "function" ? HelpTip : null

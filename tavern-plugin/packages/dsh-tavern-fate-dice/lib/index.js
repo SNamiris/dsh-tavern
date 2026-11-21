@@ -1316,13 +1316,26 @@ export function apply(ctx) {
     return injection
   }
 
+  function isGameDisabledFast(gameId) {
+    if (!gameId || !globalCache || !gameStateCache.has(gameId)) return false
+    const cached = gameStateCache.get(gameId)
+    const effectiveEnabled = cached?.config?.enabled !== undefined ? cached.config.enabled : globalCache.settings?.enabled
+    return effectiveEnabled === false
+  }
+
+  async function readGameView(gameId, fallbackRule = '2d6') {
+    if (!gameId) return normalizeGameState(null, fallbackRule)
+    if (gameStateCache.has(gameId)) return gameStateCache.get(gameId)
+    return await readGame(gameId, fallbackRule)
+  }
+
   // ── 发前无感检定注入 ────────────────────────────────────────────
   if (typeof tavern.turnSection === 'function') {
     tavern.turnSection({
       name: 'fate-dice',
       position: 'after',
       async text({ gameId, turn, input } = {}) {
-        if (!gameId) return ''
+        if (!gameId || isGameDisabledFast(gameId)) return ''
         const startedAt = Date.now()
         const record = await computeTurn({ gameId, turn, input })
         if (!record?.injection) {
@@ -1340,8 +1353,9 @@ export function apply(ctx) {
       tavern.damperTurnQuestions({
         name: 'fate-dice-judge',
         async questions({ gameId, protocol: dynamicProtocol, capabilities: dynCaps } = {}) {
+          if (isGameDisabledFast(gameId)) return []
           const globalStore = await readGlobal()
-          const game = await readGame(gameId, globalStore.settings.rule)
+          const game = await readGameView(gameId, globalStore.settings.rule)
           const settings = effectiveSettings(globalStore, game)
           if (!settings.enabled || !settings.autoCheck || !settings.damperLinkage) return []
           const activeRule = normalizeRule(settings.rule)
@@ -1359,6 +1373,14 @@ export function apply(ctx) {
   }
 
   // ── 后台结算：自动建立与演进主角能力画像 ─────────────────────────
+  async function profileSyncContext(gameId) {
+    if (!gameId || isGameDisabledFast(gameId)) return null
+    const globalStore = await readGlobal()
+    const game = await readGameView(gameId, globalStore.settings.rule)
+    const settings = effectiveSettings(globalCache || globalStore, gameStateCache.get(gameId) || game)
+    return settings.enabled && settings.autoCheck ? { game, settings } : null
+  }
+
   function buildProfileSyncSection(game, settings) {
     const profile = game.characterProfile
     const traits = Array.isArray(profile?.traits) ? profile.traits.filter(item => item && item.name) : []
@@ -1385,11 +1407,8 @@ export function apply(ctx) {
       async text({ gameId } = {}) {
         if (!gameId) return ''
         lastActiveGameId = gameId
-        const globalStore = await readGlobal()
-        const game = await readGame(gameId, globalStore.settings.rule)
-        const settings = effectiveSettings(globalStore, game)
-        if (!settings.enabled || !settings.autoCheck) return ''
-        return buildProfileSyncSection(game, settings)
+        const context = await profileSyncContext(gameId)
+        return context ? buildProfileSyncSection(context.game, context.settings) : ''
       }
     })
   }
@@ -1397,7 +1416,8 @@ export function apply(ctx) {
   const profileSyncTool = async (rawCall = {}, toolCtx = {}) => {
     const envelope = rawCall && typeof rawCall === 'object' ? rawCall : {}
     const payload = envelope.arguments && typeof envelope.arguments === 'object' ? envelope.arguments : envelope
-    const gameId = payload.gameId || envelope.gameId || toolCtx?.gameId || lastActiveGameId || ''
+    const gameId = envelope.gameId || toolCtx?.gameId || ''
+    if (!await profileSyncContext(gameId)) return { ok: false, error: '本局未启用命运之骰自动画像' }
     const rawTraits = Array.isArray(payload.traits) ? payload.traits : (Array.isArray(payload.report?.traits) ? payload.report.traits : [])
     const report = {
       characterName: String(payload.characterName || envelope.characterName || ''),
@@ -1414,10 +1434,10 @@ export function apply(ctx) {
     tavern.settlementTool({
       name: 'fate_dice_profile_sync',
       description: '提交/更新主角能力画像（能力、短板与当前伤病/装备/境界状态）。首次建档必调，之后仅在实质变化时调用。',
+      enabledFor: async ({ gameId }) => Boolean(await profileSyncContext(gameId)),
       parameters: {
         type: 'object',
         properties: {
-          gameId: { type: 'string', description: '当前对局 id（宿主上下文已提供时可省略）' },
           characterName: { type: 'string', description: '受控主角名' },
           archetype: { type: 'string', description: '一句话实力与当前状态定位' },
           traits: {
@@ -1447,20 +1467,24 @@ export function apply(ctx) {
       if (!gameId) return
       lastActiveGameId = gameId
       const pending = pendingByGame.get(gameId)
-      const syncedProfile = pendingProfileByGame.get(gameId)
+      const queuedProfile = pendingProfileByGame.get(gameId)
       const matchesPending = Boolean(
         pending && (
           Number(pending.turn) === Number(turn)
           || (Number(pending.rawTurn) > 0 && Number(pending.rawTurn) === Number(turn))
         )
       )
-      if (!matchesPending && !syncedProfile) return
+      if (!matchesPending && !queuedProfile) return
       const activePending = matchesPending ? pending : null
 
       try {
         const globalStore = await readGlobal()
         const game = await readGame(gameId, globalStore.settings.rule)
-        const settings = pending?.settings || effectiveSettings(globalStore, game)
+        const currentSettings = effectiveSettings(globalCache || globalStore, gameStateCache.get(gameId) || game)
+        if (!currentSettings.enabled) return
+        const syncedProfile = currentSettings.autoCheck ? queuedProfile : null
+        if (!activePending && !syncedProfile) return
+        const settings = activePending?.settings || currentSettings
         const activeRule = normalizeRule(settings.rule)
 
         const latestVars = (await readLatestContextAndVars(gameId, Number(turn) + 1)).variables
@@ -1605,6 +1629,8 @@ export function apply(ctx) {
           lastTurn: turnNum > 0 ? turnNum : toInt(game.lastTurn, 0),
           updatedAt: Date.now()
         }
+        const latestSettings = effectiveSettings(globalCache || globalStore, gameStateCache.get(gameId) || game)
+        if (!latestSettings.enabled || (syncedProfile && !latestSettings.autoCheck)) return
         await writeGame(gameId, nextGame)
 
         const savedTurnPayload = {
@@ -1641,7 +1667,7 @@ export function apply(ctx) {
         if (activePending && pendingByGame.get(gameId) === activePending) {
           pendingByGame.delete(gameId)
         }
-        if (syncedProfile && pendingProfileByGame.get(gameId) === syncedProfile) {
+        if (queuedProfile && pendingProfileByGame.get(gameId) === queuedProfile) {
           pendingProfileByGame.delete(gameId)
         }
 
@@ -1702,7 +1728,7 @@ export function apply(ctx) {
         if (activePending && pendingByGame.get(gameId) === activePending) {
           pendingByGame.delete(gameId)
         }
-        if (syncedProfile && pendingProfileByGame.get(gameId) === syncedProfile) {
+        if (queuedProfile && pendingProfileByGame.get(gameId) === queuedProfile) {
           pendingProfileByGame.delete(gameId)
         }
       }
