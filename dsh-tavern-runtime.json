@@ -1,7 +1,7 @@
 {
   "schemaVersion": 2,
-  "revision": "dc04af94b0c2dba93d8411646818fbf3446537ef",
-  "releaseSequence": 1,
+  "revision": "6cff1ebb5c02cdd784e5ce77c4af5a8aae355f53",
+  "releaseSequence": 2,
   "version": "3.4.0",
   "files": [
     {
@@ -101,8 +101,8 @@
     },
     {
       "path": "bin/application-update.mjs",
-      "sha256": "65a03905dfeb171224ade97b5fe1e7b77588b56c05fcbad0659ce17e64034017",
-      "size": 26860
+      "sha256": "f20ca8bf0599547e57aa6ea47b3391a868dc54b04ab1fb670e70fef02e8e421b",
+      "size": 28481
     },
     {
       "path": "bin/build-image-client.mjs",
@@ -416,8 +416,8 @@
     },
     {
       "path": "bin/service-lifecycle.mjs",
-      "sha256": "d325466fac7a680a23214c83e6a9635db66788e59db4287f93cb3916baa335c8",
-      "size": 29698
+      "sha256": "b970ac23b2b291469aeb526f14b8d8e30771bec54fd357b5f3ef7668dd58d117",
+      "size": 29869
     },
     {
       "path": "bin/service-process-identity.mjs",
@@ -451,8 +451,8 @@
     },
     {
       "path": "bin/tavern-window.mjs",
-      "sha256": "06cca62d220889ce9bc846f72db0b29c45a220b8e49db548cbca940be1a74c9b",
-      "size": 3356
+      "sha256": "d856c5401a18ffb3fde2aebf10145774613f4bc680bcb97c4647fc33be83d71c",
+      "size": 3614
     },
     {
       "path": "bin/test-runtime.mjs",
@@ -473,6 +473,11 @@
       "path": "bin/update-diagnostics.mjs",
       "sha256": "5352337394dabcab2340614594f20936c01265313407592c35397e21047a3ead",
       "size": 1422
+    },
+    {
+      "path": "bin/update-handoff.mjs",
+      "sha256": "c24d8ac8a2f6d36f8b3098ec39792613dd602d980b869ce679adedd1d2edee64",
+      "size": 7296
     },
     {
       "path": "bin/update-library-card.mjs",
@@ -976,8 +981,8 @@
     },
     {
       "path": "tavern-plugin/lib/application-updater.js",
-      "sha256": "60d75379ea6b441e8a7852d438da8a107a745f4e34ad14471a294630718c920b",
-      "size": 48998
+      "sha256": "5880b6d806fff87b74cf6d975e4ba10ba45f62d0c1ebace0c8678f48442bed65",
+      "size": 49352
     },
     {
       "path": "tavern-plugin/lib/asset-engine-settings-owner.js",
@@ -9181,8 +9186,8 @@
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/client.js",
-      "sha256": "736b217643f2259c36ed55c9a58d039a4b0e2190269b00386e3e562fecd8a148",
-      "size": 48086
+      "sha256": "d803a958ae4c554cf0d4c71bcb754e8d8af973a606b1008a1b52ea24449e3866",
+      "size": 49513
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/cordis.patch.yml",
@@ -9196,8 +9201,8 @@
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/index.js",
-      "sha256": "1d3df6205d8909c82dfa514c80636573de9631f8718decd1b204ec0b397be78a",
-      "size": 15613
+      "sha256": "83d75ed28157c4c53be8e5d21933ee45ec8c4c7a4da34101feb8be8fe592cea6",
+      "size": 17458
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/lib/helper.mjs",
@@ -9221,8 +9226,8 @@
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/lib/processes.mjs",
-      "sha256": "78ac55a66c9037bcb11af9580063d4dc2ecd8812c52cd8596cb6fdca3e29b636",
-      "size": 11595
+      "sha256": "6f787aaa3a978716ad8cf271e056d36a2321ffa5746f648a06f9887ed22d0c05",
+      "size": 12091
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/lib/proxy-environment.mjs",
@@ -9246,8 +9251,8 @@
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/lib/state.mjs",
-      "sha256": "eaa34df1666dc8f96aec8a44bbb8e5bde122b01fe431a630f468f58ea184ddfa",
-      "size": 16896
+      "sha256": "1051bde2936af19f28173ba1326316573adb2410288d6526b8db6c2834070000",
+      "size": 17166
     },
     {
       "path": "tavern-plugin/packages/dsh-tavern/lib/trusted-home.mjs",
@@ -9671,9 +9676,9 @@
     }
   ],
   "archive": {
-    "commit": "ea3aec1bde6de882a2d9bc8a6414e0a86c7d5fff",
+    "commit": "51a2721253982e783a0d2b6b81672e187f7bd2e3",
     "path": "runtime.zip",
-    "sha256": "d83a0a1a14c79353c8073bca9adbfcd8c75ca1929d594ce3c019488f5d70cd70",
-    "size": 17117705
+    "sha256": "31ea1d1d9a2b044c6c871e7203f8d981dc524ee5c15f1a0d1de201c3ab1fca69",
+    "size": 17122059
   }
 }
