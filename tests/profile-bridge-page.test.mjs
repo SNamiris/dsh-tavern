@@ -213,6 +213,35 @@ test('官方酒馆启动器按提交检查同版本更新，并跟踪安装到�
   }
 })
 
+test('Edge 准备完成后提示交接，原生窗口沿用原有的重启操作', async () => {
+  const ready = { phase: 'running', awaitingDesktopExit: true, canUpdate: true, edgeHandoff: true }
+  for (const desktopApp of [false, true]) {
+    const update = desktopApp ? { ...ready, edgeHandoffPhase: 'open' } : ready
+    const status = { appKind: 'desktop', desktopApp, desktopTavernWindow: !desktopApp,
+      activeIsLink: desktopApp, linkTargetName: desktopApp ? 'tavern' : undefined,
+      installation: { available: true }, profiles: [tavernProfile], backups: ['original'] }
+    const endpoint = desktopApp ? 'restart-desktop-update' : 'handoff-update'
+    const page = await mount(status, [], { rpc: async method => ({ ok: true,
+      value: method === 'status' ? status : { ...update, closesApp: true, ...(method === 'handoff-update' ? { edgeHandoffPhase: 'waiting' } : {}) },
+    }) })
+    try {
+      const button = namedButton(page, desktopApp ? '重启并应用更新' : '退出并用 DSH 完成更新')
+      assert.ok(button)
+      if (desktopApp) assert.match(page.text(), /已从 Edge 酒馆下载并准备完成/)
+      else {
+        assert.equal(namedButton(page, '重启并应用更新'), undefined)
+        page.dom.window.confirm = () => false
+        await page.act(async () => button.click())
+        assert.equal(page.calls.some(([method]) => method === endpoint), false)
+        page.dom.window.confirm = () => true
+      }
+      await page.act(async () => button.click())
+      assert.equal(page.calls.filter(([method]) => method === endpoint).length, 1)
+      assert.equal(page.calls.some(([method]) => method === 'start-update'), false)
+    } finally { await page.dispose() }
+  }
+})
+
 test('官方桌面在新版准备好后提供重启和手动退出提示', async () => {
   const tavern = { ...managedStatus, activeIsLink: true, linkTargetName: 'tavern' }
   const ready = { phase: 'running', canUpdate: true, cancellable: true, awaitingDesktopExit: true }

@@ -9,6 +9,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 
 import { createUpdateState } from '../../bin/update-state.mjs'
+import { activeEdgeHandoff } from '../../bin/update-handoff.mjs'
 import { verifyInstallationProcessesStopped } from '../../bin/installation-process.mjs'
 import { readInstallationReceipt } from '../../bin/installation-receipt.mjs'
 import installationState from '../../bin/installation-state.cjs'
@@ -517,11 +518,13 @@ export function createApplicationUpdater(options) {
       const publishGate = installationState.desktopPublishGate(owner.lockDir)
       const publishing = existsSync(publishGate)
       const awaitingDesktopExit = !blocked && !cancelling && !publishing && existsSync(publishGate + '.ready')
+      const handoff = owner.edgeHandoff ? activeEdgeHandoff(dshHome, owner) : null
       return { ...active, ...identity, attemptId: owner.attemptId, host: await host(),
         phase: blocked ? 'blocked' : cancelling ? 'cancelling' : 'running',
         startedAt: owner.startedAt, pid: owner.pid, stage: owner.stage || active.stage,
         progressAt: owner.progressAt || active.progressAt,
         cancellable: !!owner.supervised && !blocked && !publishing, stalled: stale,
+        ...(owner.edgeHandoff ? { edgeHandoff: true, edgeHandoffPhase: handoff?.phase } : {}),
         ...(awaitingDesktopExit ? { awaitingDesktopExit: true, stage: '新版已准备好，等待桌面退出' } : {}),
         ...(blocked ? { error: '上次安装的执行链尚未确认停止，已阻止重复安装。请先确认旧安装进程全部退出，再恢复安装。' }
           : stale ? { error: `更新已经 ${Math.round(RUNNING_TIMEOUT_MS / 60000)} 分钟没有新进展；尚未确认执行链停止，请勿同时重新安装。` } : {}),
@@ -719,6 +722,7 @@ export function createApplicationUpdater(options) {
       '--delay=800',
       ...(installHost === 'desktop' && process.versions.electron && typeof process.send === 'function' && process.ppid > 1
         ? ['--desktop-pids', [process.pid, process.ppid].join(',')] : []),
+      ...(installHost === 'desktop' && platform === 'win32' && options.edgeHandoff ? ['--edge-handoff'] : []),
       ...(version.latestCommit ? ['--target-commit', version.latestCommit] : []),
     ]
     const args = platform === 'win32'

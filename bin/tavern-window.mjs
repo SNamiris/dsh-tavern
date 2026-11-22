@@ -9,6 +9,7 @@ import { browserOpenCommand, startService } from './service-lifecycle.mjs'
 import officialDesktopRuntime from './official-desktop-runtime.cjs'
 import { startWindowsWindowIcon } from './windows-window-icon.mjs'
 import { relaunchCommand } from '../tavern-plugin/packages/dsh-tavern/lib/helper.mjs'
+import { activeEdgeHandoff } from './update-handoff.mjs'
 
 // 桌面版固定读 profiles/desktop；它链接到 tavern 时，桌面版本身就是酒馆，再起一份会同写一份存档。
 export function desktopUsesTavern(root = DSH_ROOT) {
@@ -51,7 +52,12 @@ function launch(command, args) {
 
 export async function openTavernWindow({ host = RUNTIME_HOST, root = DSH_ROOT, findDesktop = officialDesktopRuntime.discover, start = startService, open = launch } = {}) {
   if (host !== 'desktop') throw new Error('「DSH 酒馆」快捷方式只用于桌面版；命令行版请用 dsh-tavern open。')
-  if (desktopUsesTavern(root)) {
+  const handoff = activeEdgeHandoff(root)
+  if (handoff && handoff.phase !== 'open') {
+    console.log('酒馆正在交接更新，请等原生 DSH 打开或更新完成。')
+    return
+  }
+  if (handoff || desktopUsesTavern(root)) {
     const [command, args] = relaunchCommand(findDesktop())
     await open(command, args)
     return

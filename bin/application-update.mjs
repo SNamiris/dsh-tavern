@@ -17,6 +17,7 @@ import { startupTimeoutMs } from './service-startup.mjs'
 import { assertDesktopStopped } from './import-user-home.mjs'
 import { processAlive, relaunchApp } from '../tavern-plugin/packages/dsh-tavern/lib/helper.mjs'
 import { recordProfileContinuation } from '../tavern-plugin/packages/dsh-tavern/lib/startup-profile.mjs'
+import { activeEdgeHandoff, finishEdgeHandoff, openHandoffDesktop } from './update-handoff.mjs'
 
 // Own update execution and durable terminal outcomes, including installed-but-needs-restart.
 export function encodeWindowsPowerShellScript(source) {
@@ -100,6 +101,7 @@ export function parseUpdateOptions(args) {
   let targetCommit = ''
   let attemptId = ''
   let desktopPids
+  let edgeHandoff = false
   for (let index = 0; index < options.length; index += 1) {
     const value = options[index]
     if (value === '--host') host = options[++index]
@@ -115,6 +117,7 @@ export function parseUpdateOptions(args) {
     else if (value === '--target-commit') targetCommit = options[++index]
     else if (value.startsWith('--target-commit=')) targetCommit = value.slice('--target-commit='.length)
     else if (value === '--desktop-pids') desktopPids = (options[++index] || '').split(',').map(Number)
+    else if (value === '--edge-handoff') edgeHandoff = true
     else throw new Error(`无法识别的更新参数：${value}`)
   }
   if (!INSTALL_HOSTS.has(host)) throw new Error(`不支持的安装宿主：${host}`)
@@ -125,7 +128,11 @@ export function parseUpdateOptions(args) {
   if (desktopPids && (host !== 'desktop' || desktopPids.length !== 2 || !desktopPids.every(pid => Number.isSafeInteger(pid) && pid > 1) || desktopPids[0] === desktopPids[1])) {
     throw new Error('桌面更新进程编号无效')
   }
-  return { host, statusFile, delay, targetCommit, ...(attemptId ? { attemptId } : {}), ...(desktopPids ? { desktopPids } : {}) }
+  if (edgeHandoff && (process.platform !== 'win32' || host !== 'desktop' || desktopPids || !attemptId || !statusFile)) {
+    throw new Error('Edge 更新交接需要已登记的 Windows 桌面更新。')
+  }
+  return { host, statusFile, delay, targetCommit, ...(attemptId ? { attemptId } : {}), ...(desktopPids ? { desktopPids } : {}),
+    ...(edgeHandoff ? { edgeHandoff } : {}) }
 }
 
 
@@ -180,13 +187,16 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
     installedAppRoot = options.host === 'android' ? (options.installedSourceRoot || sourceRoot)
       : installationLocation.resolveInstallationApp({ dshHome, appDir: options.installedSourceRoot || process.env.DSH_TAVERN_APP_DIR })
   } catch (error) { lease.release(); throw error }
-  lease.update({ supervised: true, state: 'running' })
+  lease.update({ supervised: true, state: 'running', ...(options.edgeHandoff ? { edgeHandoff: true } : {}) })
   const state = createUpdateState(options.statusFile, dshHome)
   const writeUpdateStatus = value => state.write(value, { attemptId })
   const controller = new AbortController()
-  const desktopGate = options.host === 'desktop' && options.desktopPids ? installationState.desktopPublishGate(lease.lockDir) : ''
+  const desktopGate = options.host === 'desktop' && (options.desktopPids || options.edgeHandoff) ? installationState.desktopPublishGate(lease.lockDir) : ''
   let desktopPublishing = false
   let desktopGateError
+  let openingHandoff
+  let handoffCreatedAt
+  let handoffError
   const poll = setInterval(() => {
     if (controller.signal.aborted || desktopPublishing) return
     try {
@@ -194,7 +204,23 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
         controller.abort(new Error('用户请求中止更新'))
         return
       }
-      if (!desktopGate || !existsSync(desktopGate + '.ready') || options.desktopPids.some(processAlive)) return
+      if (!desktopGate || !existsSync(desktopGate + '.ready')) return
+      let desktopPids = options.desktopPids
+      if (options.edgeHandoff) {
+        const owner = lease.owner
+        const handoff = activeEdgeHandoff(dshHome, owner)
+        if (handoff?.phase === 'waiting' && !openingHandoff) {
+          handoffCreatedAt = handoff.createdAt
+          openingHandoff = openHandoffDesktop({ dshHome, appDir: installedAppRoot, owner, marker: handoff, signal: controller.signal })
+            .catch(error => {
+              handoffError = desktopGateError = error
+              controller.abort(error)
+            })
+        }
+        if (!handoff && handoffCreatedAt !== undefined) throw new Error('Edge 更新交接已过期，请重新准备。')
+        desktopPids = handoff?.phase === 'native' ? handoff.pids : undefined
+      }
+      if (!desktopPids || desktopPids.some(processAlive)) return
       const checkDesktopStopped = options.assertDesktopStopped || assertDesktopStopped
       checkDesktopStopped([dshHome], { requireGuiClosed: true, preparingForPid: process.pid })
       lease.withOwnership(() => {
@@ -419,6 +445,13 @@ export async function updateApplication(options = { host: RUNTIME_HOST, statusFi
     throw failure
   } finally {
     clearInterval(poll)
+    if (options.edgeHandoff) {
+      controller.abort()
+      await openingHandoff
+      try { finishEdgeHandoff(dshHome, attemptId, handoffError) } catch (error) {
+        log('无法清理 Edge 更新交接记录：' + error.message)
+      }
+    }
     if (safeToRelease) lease.release()
     if (reopenDesktop) {
       const reportRelaunchError = error => {

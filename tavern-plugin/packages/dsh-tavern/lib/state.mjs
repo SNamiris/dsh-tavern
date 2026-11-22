@@ -38,6 +38,10 @@ export function isOfficialDesktopApp() {
 export function launcherPaths(ctx, env = process.env) {
   const profile = ctx.get?.('profileContext') ?? ctx.profileContext
   const desktop = ctx.get?.('desktopProfiles')?.current
+  if (!desktop && !isDesktopApp() && env.DSH_TAVERN_RUNTIME_HOST === 'desktop' && profile?.name === 'tavern'
+      && profile.dir && profile.home) {
+    return resolvePaths({ ...env, DSH_HOME: profile.home, DSH_PROFILE: profile.name, DSH_PROFILE_DIR: profile.dir })
+  }
   if (!desktop || !profile || desktop.dir !== profile.dir) return resolvePaths(env)
   return { ...resolvePaths({ DSH_HOME: profile.home, DSH_PROFILE: profile.name, DSH_PROFILE_DIR: profile.dir }), host: 'next' }
 }

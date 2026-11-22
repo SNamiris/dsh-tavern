@@ -98,6 +98,13 @@ async function powershell(body, { run = execFile, timeout = 30000 } = {}) {
 }
 const valid = row => Number.isInteger(row?.pid) && row.pid > 1 && typeof row.created === 'string' && /^[1-9]\d*$/u.test(row.created)
 
+export async function captureProcessIdentity(pid, { inspect = powershell } = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('无效的酒馆后台进程。')
+  const result = await inspect(`[pscustomobject]@{ rows = @([BridgeProcesses]::Snapshot() | Where-Object { $_.pid -eq ${pid} }) } | ConvertTo-Json -Depth 4 -Compress`)
+  if (result?.rows?.length !== 1 || !valid(result.rows[0])) throw new Error('无法确认酒馆后台的启动身份。')
+  return result.rows[0]
+}
+
 /** Pure selection: missing identities and stale parent PIDs never confer ownership. */
 export function selectOwnedProcesses(rows, pids, excluded = []) {
   const byPid = new Map(rows.map(row => [row.pid, row]))

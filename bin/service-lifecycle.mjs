@@ -17,6 +17,7 @@ import { installBundledTavernPlugins } from './bundled-tavern-plugins.mjs'
 import { resolveTavernDataRoot } from '../tavern-plugin/lib/domain/tavern-data.js'
 import { migrateSessionPrefixEvents } from './session-prefix-migration.mjs'
 import { ensureSidebarDefaults } from './launcher-settings.mjs'
+import { activeEdgeHandoff } from './update-handoff.mjs'
 import { PROFILE_DIR, PID_FILE, PROFILE, SOURCE_ROOT, CLI_PORT, CLI_HOST, LOG_DIR, LOG_FILE, DSH_ROOT, BACKUP_ROOT, FRONTEND_BOOTSTRAP_FILE, FRONTEND_BOOTSTRAP_VERSION, commandExists, runtimeEnvironment, RUNTIME_HOST, findDshCommand, resolveDshInvocation, sleep } from './launcher-environment.mjs'
 
 // Own process identity, readiness, shutdown, and validated browser access.
@@ -461,6 +462,7 @@ export function serviceDshArgs(bindHost, port) {
 }
 
 export async function startService() {
+  if (activeEdgeHandoff(DSH_ROOT)) throw new Error('酒馆正在交接更新，请等原生 DSH 完成更新。')
   verifyProfile()
   ensureSidebarDefaults()
   const timeoutMs = startupTimeoutMs(RUNTIME_HOST)

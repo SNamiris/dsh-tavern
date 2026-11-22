@@ -1,6 +1,6 @@
 // Queue a directory switch for when Desktop exits, then ask it to quit and reopen it.
 import { basename, join } from 'node:path'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { inspectInstallation, validateInstallationRequest } from './lib/installation.mjs'
 import { captureOwnedProcesses } from './lib/processes.mjs'
@@ -20,6 +20,7 @@ const BODY_LIMIT_BYTES = 64 * 1024
 const updateActions = new Map([
   ['update-status', 'status'], ['check-update', 'check'],
   ['start-update', 'start'], ['cancel-update', 'cancel'], ['restart-desktop-update', 'restart'],
+  ['handoff-update', 'handoff'],
 ])
 let installedUpdater
 
@@ -34,13 +35,14 @@ async function runUpdate(method, paths) {
   // Official updates run from Tavern and refresh the inactive original launcher.
   // NEXT prepares the update from either managed Profile before asking to restart.
   const canUpdate = isActiveTavern(paths, installation) || (next && original)
-  if (['start', 'cancel', 'restart'].includes(method) && !canUpdate) {
+  if (['start', 'cancel', 'restart', 'handoff'].includes(method) && !canUpdate) {
     fail('update-unavailable', next ? '请在 NEXT 的原版 DSH 或酒馆配置中更新。' : '请先切换到 DSH 酒馆，再在启动器中更新。')
   }
   const sourceRoot = installation.appDir
   const dataRoot = join(installation.sharedHome, 'profile-data', 'tavern', 'data')
   const runtimeHost = next ? 'next' : 'desktop'
-  const key = JSON.stringify([sourceRoot, dataRoot, runtimeHost])
+  const edgeHandoff = !next && process.platform === 'win32' && !isDesktopApp() && isDesktopTavernWindow(paths, installation)
+  const key = JSON.stringify([sourceRoot, dataRoot, runtimeHost, edgeHandoff])
   if (installedUpdater?.key !== key) {
     // Use the updater in the verified Tavern installation.
     const runtime = join(sourceRoot, 'tavern-plugin', 'lib')
@@ -48,15 +50,32 @@ async function runUpdate(method, paths) {
     const service = import(entry.href).then(({ createApplicationUpdater }) => createApplicationUpdater({
       dataRoot, sourceRoot, dshHome: installation.sharedHome, runtimeHost,
       hostDependencyAnchor: join(runtime, 'index.js'),
+      ...(edgeHandoff ? { edgeHandoff: true } : {}),
     }))
     installedUpdater = { key, service }
     service.catch(() => { if (installedUpdater?.service === service) installedUpdater = undefined })
   }
   const updater = await installedUpdater.service
+  if (method === 'handoff') {
+    if (!edgeHandoff) fail('not-desktop', '请从 Edge 酒馆独立窗口交接更新。')
+    const current = await updater.status()
+    if (!current.awaitingDesktopExit || !current.edgeHandoff) fail('update-not-ready', '新版尚未准备好。')
+    const record = JSON.parse(readFileSync(join(installation.sharedHome, 'logs', 'tavern.pid.json'), 'utf8'))
+    if (record.pid !== process.pid || record.profile !== 'tavern') fail('not-desktop', '当前进程不是已登记的酒馆后台。')
+    const { requestEdgeHandoff } = await import(pathToFileURL(join(sourceRoot, 'bin', 'update-handoff.mjs')).href)
+    await requestEdgeHandoff({ dshHome: installation.sharedHome, appDir: sourceRoot })
+    // Leave time for the RPC reply, then take the CLI Host's normal shutdown path.
+    setTimeout(() => { process.emit('SIGTERM') }, 500).unref()
+    return { ...current, canUpdate, edgeHandoffPhase: 'waiting' }
+  }
   if (method === 'restart') {
     if (next || !isOfficialDesktopApp()) fail('not-desktop', '请在官方 DeepSeek Harness 中重启应用。')
     const current = await updater.status()
     if (!current.awaitingDesktopExit) fail('update-not-ready', '新版尚未准备好，或当前更新已结束。')
+    if (current.edgeHandoff) {
+      const { registerNativeHandoff } = await import(pathToFileURL(join(sourceRoot, 'bin', 'update-handoff.mjs')).href)
+      registerNativeHandoff({ dshHome: installation.sharedHome, appDir: sourceRoot, pids: [process.pid, process.ppid] })
+    }
     const closesApp = await requestDesktopQuit({ pid: process.ppid, executable: process.execPath })
     return { ...current, canUpdate, closesApp }
   }
@@ -228,6 +247,12 @@ export function apply(ctx) {
   if (isOfficialDesktopApp() && basename(paths.activeDir) === 'desktop' && !globalThis[startupKey]) {
     globalThis[startupKey] = true
     Promise.resolve().then(async () => {
+      const installation = inspectInstallation(paths)
+      const handoffModule = installation.available && join(installation.appDir, 'bin', 'update-handoff.mjs')
+      if (handoffModule && existsSync(handoffModule)) {
+        const { activeEdgeHandoff } = await import(pathToFileURL(handoffModule).href)
+        if (activeEdgeHandoff(installation.sharedHome)) return
+      }
       const link = readLinkTarget(paths.activeDir)
       const current = link ? basename(link) : 'desktop'
       const preferred = initializeDefaultProfile(paths.home, current)

@@ -82,6 +82,10 @@ window.__ModuleLoader__.load({
       nextUpdateReady: '新版已准备好，程序和配置均已验证。保存工作后，重启 NEXT 即可切换。',
       nextUpdateRestarting: '正在退出 NEXT，切换后会自动打开。若窗口仍在，请从应用菜单或托盘退出。',
       nextRestartUpdate: '重启并应用更新',
+      exitForDesktopUpdate: '退出并用 DSH 完成更新',
+      confirmDesktopHandoff: 'Edge 酒馆将断开。原生 DSH 会自动打开，请在那里的酒馆启动器中应用已准备好的更新。',
+      desktopHandoffWaiting: '正在等待 Edge 酒馆后台退出并打开原生 DSH…',
+      desktopHandoffReady: '新版已从 Edge 酒馆下载并准备完成。请在此应用更新。',
       nextManage: '请在原版 DSH 或酒馆配置中删除酒馆。',
       nextUninstallWarning: '请先保存工作。确认后 NEXT 将退出，删除完成后会重新打开原版 DSH。',
       nextQuit: '请在两分钟内从应用菜单或托盘退出 NEXT。操作完成后会重新打开。',
@@ -185,6 +189,10 @@ window.__ModuleLoader__.load({
       nextUpdateReady: 'The new version and profile have been verified. Save your work and restart NEXT to switch.',
       nextUpdateRestarting: 'NEXT is closing and will reopen after switching. If the window stays open, quit from the menu or tray.',
       nextRestartUpdate: 'Restart and apply update',
+      exitForDesktopUpdate: 'Exit and finish updating in DSH',
+      confirmDesktopHandoff: 'Edge Tavern will disconnect. The DSH desktop app will open so you can apply the prepared update from the Tavern launcher.',
+      desktopHandoffWaiting: 'Waiting for the Edge Tavern service to exit and open DSH…',
+      desktopHandoffReady: 'The update was prepared in Edge Tavern. Apply it here.',
       nextManage: 'Remove Tavern from the original DSH or Tavern Profile.',
       nextUninstallWarning: 'Save your work first. NEXT will quit after confirmation and reopen in original DSH when removal finishes.',
       nextQuit: 'Quit NEXT from the app menu or tray within two minutes. It reopens after the operation.',
@@ -470,6 +478,7 @@ window.__ModuleLoader__.load({
       }, [call, showUpdates, updating, updateAction])
       async function applyUpdate(endpoint) {
         if (actionInFlight.current || busy || pending || managementAction || lastFailure?.recoveryRequired) return
+        if (endpoint === 'handoff-update' && !window.confirm(t('confirmDesktopHandoff'))) return
         actionInFlight.current = true
         setUpdateAction(endpoint)
         setUpdateFailure('')
@@ -624,7 +633,9 @@ window.__ModuleLoader__.load({
           next && showUpdateAction && !pending ? h('p', { className: 'pb-sub' }, t('nextUpdateHint')) : null,
           !checking && update?.checkWarning ? h('p', { className: 'pb-sub' }, update.checkWarning) : null,
           checking ? h('p', { role: 'status' }, t('checkingUpdate')) : null,
-          update?.awaitingDesktopExit ? h('p', { role: 'status' }, t('desktopUpdateReady'))
+          update?.awaitingDesktopExit ? h('p', { role: 'status' }, t(update.edgeHandoff
+            ? (standalone ? (update.edgeHandoffPhase ? 'desktopHandoffWaiting' : 'desktopUpdateReady') : 'desktopHandoffReady')
+            : 'desktopUpdateReady'))
             : updating || updateAction === 'start-update' ? h(React.Fragment, null,
             h('p', { role: 'status' }, progressLabel),
             update?.phase !== 'blocked' ? h('progress', { 'aria-label': progressLabel }) : null) : null,
@@ -633,7 +644,9 @@ window.__ModuleLoader__.load({
           h('div', { className: 'pb-actions' },
             ['ready', 'restarting'].includes(nextUpdatePreparation) ? h('button', { type: 'button', className: 'pb-btn',
               disabled: Boolean(updateAction), onClick: () => void restartNextUpdate() }, t('nextRestartUpdate')) : null,
-            update?.awaitingDesktopExit && !standalone ? h('button', { type: 'button', className: 'pb-btn',
+            update?.awaitingDesktopExit && standalone && update.edgeHandoff && !update.edgeHandoffPhase ? h('button', { type: 'button', className: 'pb-btn',
+              disabled: updateButtonsBlocked, onClick: () => void applyUpdate('handoff-update') }, t('exitForDesktopUpdate')) : null,
+            update?.awaitingDesktopExit && !standalone && (!update.edgeHandoff || ['open', 'native'].includes(update.edgeHandoffPhase)) ? h('button', { type: 'button', className: 'pb-btn',
               disabled: updateButtonsBlocked, onClick: () => void applyUpdate('restart-desktop-update') }, t('nextRestartUpdate')) : null,
             !pending && !updating && !updateRestart ? h('button', { type: 'button', className: 'pb-btn pb-btn-quiet', disabled: updateButtonsBlocked, onClick: () => void applyUpdate('check-update') }, t('checkUpdate')) : null,
             showUpdateAction ? h('button', { type: 'button', className: 'pb-btn', disabled: updateButtonsBlocked, onClick: () => void applyUpdate('start-update') }, t(updateButtonLabel)) : null,
